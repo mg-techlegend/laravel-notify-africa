@@ -205,6 +205,10 @@ Please review [our security policy](../../security/policy) on how to report secu
 - [Thomson Maguru](https://github.com/mg-techlegend)
 - [All Contributors](../../contributors)
 
+### Notify Africa and iPF Softwares
+
+The **SMS API** behind this package is **[Notify Africa](https://notify.africa/)**, built and operated by **[iPF Softwares](https://github.com/iPFSoftwares)**. Documentation: [SMS API](https://docs.notify.africa/docs/api/sms). Official PHP client (separate from this Laravel package): [notify-africa-php](https://github.com/iPFSoftwares/notify-africa-php).
+
 ## License
 
 The MIT License. See [LICENSE.md](LICENSE.md).

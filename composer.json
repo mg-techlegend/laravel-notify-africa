@@ -13,6 +13,11 @@
             "name": "Thomson Maguru",
             "email": "cliffjunior200@gmail.com",
             "role": "Developer"
+        },
+        {
+            "name": "iPF Softwares",
+            "homepage": "https://github.com/iPFSoftwares",
+            "role": "Notify Africa SMS API and official SDKs"
         }
     ],
     "require": {

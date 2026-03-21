@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- README and `composer.json` authors credit [iPF Softwares](https://github.com/iPFSoftwares) for the Notify Africa SMS API; documented suggested wording for release tags and GitHub Releases.
+
 ## [1.0.0] - 2026-03-21
 
 ### Added
