@@ -66,4 +66,23 @@ return [
     */
     'default_country_calling_code' => env('NOTIFY_AFRICA_DEFAULT_COUNTRY_CODE'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | WhatsApp Business (WABA)
+    |--------------------------------------------------------------------------
+    |
+    | WABA uses its OWN base URL and API key — a different host and credential
+    | from SMS. Do not reuse NOTIFY_AFRICA_API_TOKEN here. The HTTP retry and
+    | default country calling code settings above are shared with this client.
+    |
+    */
+    'waba' => [
+        'base_url' => env('NOTIFY_WABA_BASE_URL', 'https://notify-web-assistant-api.beagile.africa'),
+        'api_key' => env('NOTIFY_WABA_API_KEY'),
+        'timeout' => (float) env('NOTIFY_WABA_TIMEOUT', 10),
+        'connect_timeout' => (float) env('NOTIFY_WABA_CONNECT_TIMEOUT', 5),
+        'webhook_secret' => env('NOTIFY_WABA_WEBHOOK_SECRET'),
+        'signature_header' => env('NOTIFY_WABA_SIGNATURE_HEADER', 'X-Notify-Signature'),
+    ],
+
 ];

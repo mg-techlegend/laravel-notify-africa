@@ -33,6 +33,12 @@ Set the following in your `.env` (values are read **only** through `config/notif
 | `NOTIFY_AFRICA_HTTP_RETRY_ATTEMPTS` | Total HTTP attempts per call (default `1` = no retries); see [HTTP retries](#http-retries) |
 | `NOTIFY_AFRICA_HTTP_RETRY_DELAY_MS` | Delay in milliseconds between retries (default `250`) |
 | `NOTIFY_AFRICA_DEFAULT_COUNTRY_CODE` | Optional; see [Phone numbers](#phone-numbers) |
+| `NOTIFY_WABA_API_KEY` | WhatsApp (WABA) API key — **separate** credential from SMS; see [WhatsApp (WABA)](#whatsapp-waba) |
+| `NOTIFY_WABA_BASE_URL` | Optional; default `https://notify-web-assistant-api.beagile.africa` |
+| `NOTIFY_WABA_TIMEOUT` | WABA request timeout in seconds (default `10`) |
+| `NOTIFY_WABA_CONNECT_TIMEOUT` | WABA connect timeout in seconds (default `5`) |
+| `NOTIFY_WABA_WEBHOOK_SECRET` | Optional; HMAC-SHA256 secret for verifying inbound WABA webhooks |
+| `NOTIFY_WABA_SIGNATURE_HEADER` | Optional; signature header name (default `X-Notify-Signature`) |
 
 ## Configuration
 
@@ -101,6 +107,48 @@ $response = LaravelNotifyAfrica::sendBulkSms(
 $status = LaravelNotifyAfrica::getMessageStatus('156022');
 // $status->status, $status->deliveredAt, etc.
 ```
+
+## WhatsApp (WABA)
+
+WhatsApp Business messaging uses its **own** base URL and API key — a different host and credential from SMS. Set `NOTIFY_WABA_API_KEY` (and, if needed, `NOTIFY_WABA_BASE_URL`). The HTTP retry and default country calling code settings are shared with the SMS client.
+
+The WhatsApp service is resolved lazily, so SMS-only apps never need WABA credentials configured until they call `whatsapp()`.
+
+```php
+use TechLegend\LaravelNotifyAfrica\Facades\LaravelNotifyAfrica;
+
+// Plain text
+LaravelNotifyAfrica::whatsapp()->sendText('255700000001', 'Habari! Karibu BrightSmile.');
+
+// Pre-approved template (parameters keyed by position)
+LaravelNotifyAfrica::whatsapp()->sendTemplate('255700000001', 'hello_world', [
+    '1' => 'John',
+    '2' => 'BrightSmile',
+]);
+
+// Multiple recipients (string or array; numbers are normalised like SMS)
+LaravelNotifyAfrica::whatsapp()->sendText(['255700000001', '255700000002'], 'Hi');
+```
+
+`sendText` posts to `POST /v1/waba-api/messages/text` and `sendTemplate` to `POST /v1/waba-api/messages/template`, both with `Authorization: Bearer {NOTIFY_WABA_API_KEY}`. Both return a `WhatsAppSendResponse` with `apiStatus`, `envelopeMessage`, and a `results` array of `WhatsAppRecipientResult` (`to`, `success`, `messageId`, `error`). Failures map to the same exceptions as SMS (see [Exceptions](#exceptions)).
+
+### Inbound and delivery webhooks
+
+Register your webhook URL in the Notify Portal, then handle inbound messages and delivery reports with `WabaWebhookHandler`:
+
+```php
+use Illuminate\Http\Request;
+use TechLegend\LaravelNotifyAfrica\Waba\WabaWebhookHandler;
+
+Route::post('/webhooks/waba', function (Request $request, WabaWebhookHandler $handler) {
+    $result = $handler->handle($request);
+    // ['successful' => bool, 'event_type' => string, 'data' => [...], 'message' => string, 'status_code' => int]
+
+    return response()->json($result, $result['status_code']);
+});
+```
+
+When `NOTIFY_WABA_WEBHOOK_SECRET` is set, the handler verifies an HMAC-SHA256 signature from the configured header (`NOTIFY_WABA_SIGNATURE_HEADER`, default `X-Notify-Signature`); a bad or missing signature yields a `401`-shaped result. The inbound payload schema is undocumented, so every request is logged in full (via `Log::info`) and parsed defensively into normalised fields `from`, `text`, `wa_message_id`, `business_number`, and `event_type` (with the raw payload kept under `raw`). Confirm the real field names from the first logged delivery and adjust if needed.
 
 ## Exceptions
 
