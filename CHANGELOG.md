@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- WhatsApp Business (WABA) support via a multi-service accessor: `LaravelNotifyAfrica::whatsapp()->sendText(...)` and `->sendTemplate(...)`.
+- `WabaClient` HTTP layer with its own base URL and API key (separate from SMS), reusing the existing exceptions, phone normalisation, timeouts, and HTTP retry settings.
+- `NotifyWhatsApp` service accepting a single string or array of recipients, and readonly DTOs `WhatsAppSendResponse` / `WhatsAppRecipientResult`.
+- `WabaWebhookHandler` for inbound and delivery webhooks: optional HMAC-SHA256 signature verification, defensive parsing into normalised fields (`from`, `text`, `wa_message_id`, `business_number`, `event_type`), and full raw-payload logging.
+- `notify-africa.waba` config block and `NOTIFY_WABA_*` env vars (`NOTIFY_WABA_BASE_URL`, `NOTIFY_WABA_API_KEY`, `NOTIFY_WABA_TIMEOUT`, `NOTIFY_WABA_CONNECT_TIMEOUT`, `NOTIFY_WABA_WEBHOOK_SECRET`, `NOTIFY_WABA_SIGNATURE_HEADER`).
+
 ### Changed
 
 - README and `composer.json` authors credit [iPF Softwares](https://github.com/iPFSoftwares) for the Notify Africa SMS API; documented suggested wording for release tags and GitHub Releases.

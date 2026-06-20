@@ -2,19 +2,34 @@
 
 namespace TechLegend\LaravelNotifyAfrica;
 
+use Closure;
 use TechLegend\LaravelNotifyAfrica\Data\BulkSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Data\MessageStatusResponse;
 use TechLegend\LaravelNotifyAfrica\Data\SendSmsResponse;
+use TechLegend\LaravelNotifyAfrica\Services\NotifyWhatsApp;
 
 final class LaravelNotifyAfrica
 {
+    /**
+     * @param  Closure(): NotifyWhatsApp  $whatsAppResolver
+     */
     public function __construct(
         private readonly NotifyAfricaClient $client,
+        private readonly Closure $whatsAppResolver,
     ) {}
 
     public function message(): NotifyAfricaMessage
     {
         return NotifyAfricaMessage::make();
+    }
+
+    /**
+     * Resolve the WhatsApp (WABA) service lazily so SMS-only apps never need
+     * WABA credentials configured.
+     */
+    public function whatsapp(): NotifyWhatsApp
+    {
+        return ($this->whatsAppResolver)();
     }
 
     public function sendSms(NotifyAfricaMessage $message): SendSmsResponse
