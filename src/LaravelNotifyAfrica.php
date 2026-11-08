@@ -3,8 +3,10 @@
 namespace TechLegend\LaravelNotifyAfrica;
 
 use Closure;
+use DateTimeInterface;
 use TechLegend\LaravelNotifyAfrica\Data\BulkSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Data\MessageStatusResponse;
+use TechLegend\LaravelNotifyAfrica\Data\PersonalizedSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Data\SendSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Services\NotifyWhatsApp;
 
@@ -43,6 +45,14 @@ final class LaravelNotifyAfrica
     public function sendBulkSms(array $recipients, string $message, ?string $senderId = null): BulkSmsResponse
     {
         return $this->client->sendBulkSms($recipients, $message, $senderId);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $messages  Each `['to' => …, 'message' => …]`.
+     */
+    public function sendPersonalizedSms(array $messages, ?string $senderId = null, DateTimeInterface|string|null $scheduledAt = null): PersonalizedSmsResponse
+    {
+        return $this->client->sendPersonalizedSms($messages, $senderId, $scheduledAt);
     }
 
     public function getMessageStatus(string $messageId): MessageStatusResponse

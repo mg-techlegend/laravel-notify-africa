@@ -2,25 +2,36 @@
 
 namespace TechLegend\LaravelNotifyAfrica;
 
-use Illuminate\Http\Client\ConnectionException;
+use DateTimeImmutable;
+use DateTimeInterface;
+use DateTimeZone;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Http\Client\RequestException;
-use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use TechLegend\LaravelNotifyAfrica\Concerns\CallsNotifyApi;
 use TechLegend\LaravelNotifyAfrica\Data\BulkSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Data\MessageStatusResponse;
+use TechLegend\LaravelNotifyAfrica\Data\PersonalizedSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Data\SendSmsResponse;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaAuthenticationException;
+use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaException;
+use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaNotFoundException;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaRequestException;
+use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaSenderException;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaValidationException;
-use Throwable;
 
 final class NotifyAfricaClient
 {
+    use CallsNotifyApi;
+
     private const string SINGLE_PATH = '/api/v1/api/messages/send';
 
     private const string BATCH_PATH = '/api/v1/api/messages/batch';
+
+    private const string SEND_BULK_PATH = '/api/v1/api/messages/send-bulk';
+
+    private const string OP_SEND = 'send';
+
+    private const string OP_STATUS = 'status';
 
     public function __construct(
         private readonly string $apiToken,
@@ -85,10 +96,14 @@ final class NotifyAfricaClient
             'sender_id' => $senderId,
         ]);
 
-        return $this->handleJsonResponse($response, [SendSmsResponse::class, 'fromApiPayload']);
+        return $this->handleJsonResponse($response, [SendSmsResponse::class, 'fromApiPayload'], self::OP_SEND);
     }
 
     /**
+     * Same text to many recipients (POST /messages/batch). The response has
+     * counts and balance but no per-recipient message IDs; use
+     * sendPersonalizedSms() when each message must be tracked.
+     *
      * @param  array<int, string>  $phoneNumbers
      */
     public function sendBulkSms(array $phoneNumbers, string $message, ?string $senderId = null): BulkSmsResponse
@@ -113,9 +128,70 @@ final class NotifyAfricaClient
             'sender_id' => trim($resolvedSender),
         ]);
 
-        return $this->handleJsonResponse($response, [BulkSmsResponse::class, 'fromApiPayload']);
+        return $this->handleJsonResponse($response, [BulkSmsResponse::class, 'fromApiPayload'], self::OP_SEND);
     }
 
+    /**
+     * Personalised and/or scheduled bulk send (POST /messages/send-bulk).
+     * Returns one result per accepted message with its UUID for status polling.
+     *
+     * Each message is `['to' => '2557…', 'message' => 'Hello Asha']`
+     * (`recipient` / `content` are accepted as aliases). Numbers are normalised
+     * like single sends and sent in E.164 with a leading `+`, as the endpoint requires.
+     *
+     * @param  array<int, array<string, mixed>>  $messages
+     * @param  DateTimeInterface|string|null  $scheduledAt  One schedule for the whole batch (ISO 8601 when a string).
+     */
+    public function sendPersonalizedSms(array $messages, ?string $senderId = null, DateTimeInterface|string|null $scheduledAt = null): PersonalizedSmsResponse
+    {
+        if ($messages === []) {
+            throw new InvalidArgumentException('[Notify Africa] Personalised bulk SMS requires at least one message.');
+        }
+
+        $resolvedSender = $senderId ?? $this->defaultSenderId;
+        if ($resolvedSender === null || trim($resolvedSender) === '') {
+            throw new InvalidArgumentException('[Notify Africa] Sender ID is required for bulk SMS. Set notify-africa.sender_id or pass a non-empty sender ID.');
+        }
+
+        $payloadMessages = [];
+        foreach (array_values($messages) as $i => $item) {
+            $to = $item['to'] ?? $item['recipient'] ?? null;
+            $content = $item['message'] ?? $item['content'] ?? null;
+
+            if (! is_string($to) || trim($to) === '') {
+                throw new InvalidArgumentException(sprintf('[Notify Africa] Message %d has no recipient (`to`).', $i));
+            }
+            if (! is_string($content) || trim($content) === '') {
+                throw new InvalidArgumentException(sprintf('[Notify Africa] Message %d has empty content (`message`).', $i));
+            }
+
+            $payloadMessages[] = [
+                'recipient' => '+'.$this->normalizer->normalize($to),
+                'content' => $content,
+            ];
+        }
+
+        $body = [
+            'senderId' => trim($resolvedSender),
+            'messages' => $payloadMessages,
+        ];
+
+        if ($scheduledAt !== null) {
+            $body['scheduledAt'] = $scheduledAt instanceof DateTimeInterface
+                ? DateTimeImmutable::createFromInterface($scheduledAt)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\\TH:i:s.v\\Z')
+                : $scheduledAt;
+        }
+
+        $response = $this->pendingRequest()->post(self::SEND_BULK_PATH, $body);
+
+        return $this->handleJsonResponse($response, [PersonalizedSmsResponse::class, 'fromApiPayload'], self::OP_SEND);
+    }
+
+    /**
+     * Status by the message UUID returned from a send. Unknown, malformed and
+     * other-customer IDs all come back as HTTP 403 and throw
+     * NotifyAfricaNotFoundException.
+     */
     public function getMessageStatus(string $messageId): MessageStatusResponse
     {
         if (trim($messageId) === '') {
@@ -125,101 +201,57 @@ final class NotifyAfricaClient
         $encodedId = rawurlencode($messageId);
         $response = $this->pendingRequest()->get("/api/v1/api/messages/status/{$encodedId}");
 
-        return $this->handleJsonResponse($response, [MessageStatusResponse::class, 'fromApiPayload']);
+        return $this->handleJsonResponse($response, [MessageStatusResponse::class, 'fromApiPayload'], self::OP_STATUS);
     }
 
-    /**
-     * @param  callable(array<string, mixed>): object  $factory
-     */
-    private function handleJsonResponse(Response $response, callable $factory): object
+    protected function apiLabel(): string
     {
-        /** @var array<string, mixed>|null $decoded */
-        $decoded = $response->json();
-
-        if (! is_array($decoded)) {
-            throw new NotifyAfricaRequestException(
-                sprintf('[Notify Africa] Expected JSON from the API but the response was not valid JSON (HTTP %d).', $response->status()),
-                ['http_status' => $response->status(), 'body' => $response->body()],
-            );
-        }
-
-        $httpStatus = $response->status();
-        $apiStatus = isset($decoded['status']) ? (int) $decoded['status'] : null;
-        $ok = $response->successful() && $apiStatus === 200;
-
-        if ($ok) {
-            return $factory($decoded);
-        }
-
-        $rawMessage = $decoded['message'] ?? null;
-        $errorMessage = is_string($rawMessage) && $rawMessage !== ''
-            ? $rawMessage
-            : sprintf('[Notify Africa] Request failed (HTTP %d).', $httpStatus);
-
-        throw $this->mapFailure($httpStatus, $errorMessage, $decoded);
+        return 'SMS API';
     }
 
     /**
      * @param  array<string, mixed>  $decoded
      */
-    private function mapFailure(int $httpStatus, string $errorMessage, array $decoded): NotifyAfricaAuthenticationException|NotifyAfricaValidationException|NotifyAfricaRequestException
+    protected function mapFailure(int $httpStatus, string $errorMessage, array $decoded, string $operation): NotifyAfricaException
     {
+        if ($operation === self::OP_STATUS && in_array($httpStatus, [403, 404], true)) {
+            return new NotifyAfricaNotFoundException($errorMessage, $decoded, null, $httpStatus);
+        }
+
+        if ($operation === self::OP_SEND) {
+            $reason = match ($httpStatus) {
+                404 => NotifyAfricaSenderException::NOT_FOUND,
+                409 => NotifyAfricaSenderException::LIMIT_REACHED,
+                422 => NotifyAfricaSenderException::NOT_APPROVED,
+                default => null,
+            };
+
+            if ($reason !== null) {
+                return new NotifyAfricaSenderException($errorMessage, $reason, $decoded, $httpStatus);
+            }
+        }
+
         if ($httpStatus === 401 || $httpStatus === 403) {
-            return new NotifyAfricaAuthenticationException($errorMessage, $decoded);
+            return new NotifyAfricaAuthenticationException($errorMessage, $decoded, null, $httpStatus);
         }
 
-        if (in_array($httpStatus, [400, 422], true)) {
-            return new NotifyAfricaValidationException($errorMessage, $decoded);
+        // 400/422, or an HTTP 2xx whose envelope reports a non-2xx status.
+        if (in_array($httpStatus, [400, 422], true) || ($httpStatus >= 200 && $httpStatus < 300)) {
+            return new NotifyAfricaValidationException($errorMessage, $decoded, null, $httpStatus);
         }
 
-        if ($httpStatus === 200) {
-            return new NotifyAfricaValidationException($errorMessage, $decoded);
-        }
-
-        if ($httpStatus === 0 || $httpStatus >= 500) {
-            return new NotifyAfricaRequestException($errorMessage, $decoded);
-        }
-
-        return new NotifyAfricaRequestException($errorMessage, $decoded);
+        return new NotifyAfricaRequestException($errorMessage, $decoded, null, $httpStatus);
     }
 
     private function pendingRequest(): PendingRequest
     {
-        $pending = Http::baseUrl($this->baseUrl)
-            ->withToken($this->apiToken)
-            ->acceptJson()
-            ->asJson()
-            ->timeout($this->timeout)
-            ->connectTimeout($this->connectTimeout);
-
-        if ($this->httpRetryAttempts > 1) {
-            $pending->retry(
-                $this->httpRetryAttempts,
-                $this->httpRetryDelayMs,
-                fn (?Throwable $exception, PendingRequest $request): bool => $this->shouldRetryHttpAttempt($exception),
-                throw: false,
-            );
-        }
-
-        return $pending;
-    }
-
-    private function shouldRetryHttpAttempt(?Throwable $exception): bool
-    {
-        if ($exception === null) {
-            return false;
-        }
-
-        if ($exception instanceof ConnectionException) {
-            return true;
-        }
-
-        if ($exception instanceof RequestException && $exception->response !== null) {
-            $status = $exception->response->status();
-
-            return in_array($status, [408, 425, 429, 500, 502, 503, 504], true);
-        }
-
-        return false;
+        return $this->newPendingRequest(
+            $this->baseUrl,
+            $this->apiToken,
+            $this->timeout,
+            $this->connectTimeout,
+            $this->httpRetryAttempts,
+            $this->httpRetryDelayMs,
+        );
     }
 }

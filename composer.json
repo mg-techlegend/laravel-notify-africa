@@ -1,10 +1,13 @@
 {
     "name": "mg-techlegend/laravel-notify-africa",
-    "description": "Laravel Notify Africa is a lightweight Laravel package for sending SMS via the Notify Africa API. It provides a clean, expressive interface for single and bulk messaging, integrates with Laravel Notifications, and simplifies SMS delivery without dealing with raw HTTP requests.",
+    "description": "Laravel package for the Notify Africa API: SMS (single, batch, personalised and scheduled bulk, delivery status) and WhatsApp Business (text, templates incl. OTP, template management, signed webhooks), with Laravel Notifications support.",
     "keywords": [
         "TechLegend",
         "laravel",
-        "laravel-notify-africa"
+        "laravel-notify-africa",
+        "sms",
+        "whatsapp",
+        "tanzania"
     ],
     "homepage": "https://github.com/mg-techlegend/laravel-notify-africa",
     "license": "MIT",

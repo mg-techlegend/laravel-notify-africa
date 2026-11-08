@@ -33,9 +33,11 @@ class LaravelNotifyAfricaServiceProvider extends PackageServiceProvider
         });
 
         $this->app->singleton(WabaWebhookHandler::class, function ($app) {
+            $tolerance = $app['config']->get('notify-africa.waba.webhook_tolerance');
+
             return new WabaWebhookHandler(
                 (string) ($app['config']->get('notify-africa.waba.webhook_secret') ?? ''),
-                (string) ($app['config']->get('notify-africa.waba.signature_header') ?? 'X-Notify-Signature'),
+                is_numeric($tolerance) ? max(0, (int) $tolerance) : WabaWebhookHandler::DEFAULT_TOLERANCE_SECONDS,
             );
         });
 

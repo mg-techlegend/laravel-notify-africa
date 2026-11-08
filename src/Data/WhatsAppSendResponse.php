@@ -2,6 +2,10 @@
 
 namespace TechLegend\LaravelNotifyAfrica\Data;
 
+/**
+ * HTTP 200 can mix accepted and rejected recipients; inspect every result.
+ * `success: true` means queued, not delivered — final state arrives by webhook.
+ */
 readonly class WhatsAppSendResponse
 {
     /**
@@ -36,5 +40,24 @@ readonly class WhatsAppSendResponse
             envelopeMessage: (string) ($decoded['message'] ?? ''),
             results: $results,
         );
+    }
+
+    public function allSucceeded(): bool
+    {
+        foreach ($this->results as $result) {
+            if (! $result->success) {
+                return false;
+            }
+        }
+
+        return $this->results !== [];
+    }
+
+    /**
+     * @return array<int, WhatsAppRecipientResult>
+     */
+    public function failures(): array
+    {
+        return array_values(array_filter($this->results, static fn (WhatsAppRecipientResult $r): bool => ! $r->success));
     }
 }

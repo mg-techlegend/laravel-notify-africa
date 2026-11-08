@@ -7,7 +7,8 @@ return [
     | API token
     |--------------------------------------------------------------------------
     |
-    | Bearer token from your Notify Africa dashboard. Never commit this value.
+    | ntfy_ API key from the Notify Africa Portal. Never commit this value.
+    | A key with both SMS and WABA access also serves WhatsApp (see below).
     |
     */
     'api_token' => env('NOTIFY_AFRICA_API_TOKEN'),
@@ -71,18 +72,24 @@ return [
     | WhatsApp Business (WABA)
     |--------------------------------------------------------------------------
     |
-    | WABA uses its OWN base URL and API key — a different host and credential
-    | from SMS. Do not reuse NOTIFY_AFRICA_API_TOKEN here. The HTTP retry and
-    | default country calling code settings above are shared with this client.
+    | Same host as SMS (https://api.notify.africa, paths under /v1/waba-api).
+    | Since 2026-09-07 one ntfy_ key can carry both SMS and WABA access, so
+    | api_key falls back to NOTIFY_AFRICA_API_TOKEN when NOTIFY_WABA_API_KEY
+    | is unset. The HTTP retry and default country calling code settings above
+    | are shared with this client.
+    |
+    | webhook_secret is the Portal-generated whsec_ signing secret. Callbacks
+    | are rejected when it is unset. webhook_tolerance is the replay window in
+    | seconds (0 turns the timestamp age check off).
     |
     */
     'waba' => [
-        'base_url' => env('NOTIFY_WABA_BASE_URL', 'https://notify-web-assistant-api.beagile.africa'),
-        'api_key' => env('NOTIFY_WABA_API_KEY'),
+        'base_url' => env('NOTIFY_WABA_BASE_URL', env('NOTIFY_AFRICA_BASE_URL', 'https://api.notify.africa')),
+        'api_key' => env('NOTIFY_WABA_API_KEY', env('NOTIFY_AFRICA_API_TOKEN')),
         'timeout' => (float) env('NOTIFY_WABA_TIMEOUT', 10),
         'connect_timeout' => (float) env('NOTIFY_WABA_CONNECT_TIMEOUT', 5),
         'webhook_secret' => env('NOTIFY_WABA_WEBHOOK_SECRET'),
-        'signature_header' => env('NOTIFY_WABA_SIGNATURE_HEADER', 'X-Notify-Signature'),
+        'webhook_tolerance' => (int) env('NOTIFY_WABA_WEBHOOK_TOLERANCE', 300),
     ],
 
 ];

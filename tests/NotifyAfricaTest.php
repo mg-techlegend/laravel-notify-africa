@@ -4,7 +4,9 @@ use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Http;
 use TechLegend\LaravelNotifyAfrica\Channels\NotifyAfricaChannel;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaAuthenticationException;
+use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaNotFoundException;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaRequestException;
+use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaSenderException;
 use TechLegend\LaravelNotifyAfrica\Exceptions\NotifyAfricaValidationException;
 use TechLegend\LaravelNotifyAfrica\Facades\LaravelNotifyAfrica as LaravelNotifyAfricaFacade;
 use TechLegend\LaravelNotifyAfrica\LaravelNotifyAfrica;
@@ -89,9 +91,10 @@ it('throws on authentication failure', function () {
 it('throws on validation failure', function () {
     Http::fake([
         'https://api.notify.africa/api/v1/api/messages/send' => Http::response([
-            'status' => 422,
+            'status' => 400,
             'message' => 'Invalid phone number',
-        ], 422),
+            'code' => 'BAD_REQUEST',
+        ], 400),
     ]);
 
     $entry = app(LaravelNotifyAfrica::class);
@@ -377,3 +380,197 @@ it('rejects notifiables without routeNotificationForNotifyAfrica', function () {
     expect(fn () => app(NotifyAfricaChannel::class)->send(new stdClass, $notification))
         ->toThrow(InvalidArgumentException::class, '[Notify Africa] The notifiable must implement routeNotificationForNotifyAfrica().');
 });
+
+// ---------------------------------------------------------------------------
+// Notify Africa SMS contract of 2026-09 (docs.notify.africa/docs/api/sms)
+// ---------------------------------------------------------------------------
+
+it('accepts the documented 202 from /messages/send', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send' => Http::response([
+            'status' => 202,
+            'message' => 'SMS accepted',
+            'timestamp' => '2026-09-09T13:00:00.000Z',
+            'path' => '/api/v1/api/messages/send',
+            'data' => ['messageId' => 'd9b54c80-8a63-4f8b-83c8-71f2439f5429', 'status' => 'PROCESSING'],
+        ], 202),
+    ]);
+
+    $response = app(LaravelNotifyAfrica::class)->sendSms(
+        NotifyAfricaMessage::make()->to('255712345678')->content('Your order has shipped'),
+    );
+
+    expect($response->messageId)->toBe('d9b54c80-8a63-4f8b-83c8-71f2439f5429')
+        ->and($response->deliveryStatus)->toBe('PROCESSING')
+        ->and($response->apiStatus)->toBe(202);
+
+    Http::assertSentCount(1);
+});
+
+it('treats an HTTP 2xx without an envelope status as success', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send' => Http::response([
+            'data' => ['messageId' => 'abc', 'status' => 'PROCESSING'],
+        ], 202),
+    ]);
+
+    $response = app(LaravelNotifyAfrica::class)->sendSms(
+        NotifyAfricaMessage::make()->to('255712345678')->content('Hi'),
+    );
+
+    expect($response->messageId)->toBe('abc');
+});
+
+it('maps a 403 on status lookup to not-found, not authentication', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/status/*' => Http::response([
+            'status' => 403,
+            'message' => 'Message not found or not authorized',
+            'code' => 'FORBIDDEN',
+            'error' => 'Message not found or not authorized',
+        ], 403),
+    ]);
+
+    try {
+        app(LaravelNotifyAfrica::class)->getMessageStatus('not-an-owned-message');
+        $this->fail('Expected NotifyAfricaNotFoundException');
+    } catch (NotifyAfricaNotFoundException $e) {
+        expect($e)->not->toBeInstanceOf(NotifyAfricaAuthenticationException::class)
+            ->and($e)->toBeInstanceOf(NotifyAfricaRequestException::class)
+            ->and($e->getMessage())->toBe('Message not found or not authorized')
+            ->and($e->httpStatus)->toBe(403)
+            ->and($e->apiCode())->toBe('FORBIDDEN');
+    }
+});
+
+it('keeps 401 on status lookup as an authentication failure', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/status/*' => Http::response(['status' => 401, 'message' => 'Invalid API key'], 401),
+    ]);
+
+    expect(fn () => app(LaravelNotifyAfrica::class)->getMessageStatus('d9b54c80-8a63-4f8b-83c8-71f2439f5429'))
+        ->toThrow(NotifyAfricaAuthenticationException::class, 'Invalid API key');
+});
+
+it('maps sender failures on send to NotifyAfricaSenderException', function (int $http, string $reason) {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send' => Http::response([
+            'status' => $http,
+            'message' => 'Sender problem',
+        ], $http),
+    ]);
+
+    try {
+        app(LaravelNotifyAfrica::class)->sendSms(NotifyAfricaMessage::make()->to('255712345678')->content('Hi'));
+        $this->fail('Expected NotifyAfricaSenderException');
+    } catch (NotifyAfricaSenderException $e) {
+        expect($e->reason)->toBe($reason)
+            ->and($e->httpStatus)->toBe($http)
+            ->and($e)->toBeInstanceOf(NotifyAfricaValidationException::class);
+    }
+})->with([
+    'not found' => [404, NotifyAfricaSenderException::NOT_FOUND],
+    'limit reached' => [409, NotifyAfricaSenderException::LIMIT_REACHED],
+    'not approved' => [422, NotifyAfricaSenderException::NOT_APPROVED],
+]);
+
+it('maps sender failures on batch sends too', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/batch' => Http::response(['status' => 409, 'message' => 'Sender usage limit reached'], 409),
+    ]);
+
+    expect(fn () => app(LaravelNotifyAfrica::class)->sendBulkSms(['255712345678'], 'Hi'))
+        ->toThrow(NotifyAfricaSenderException::class, 'Sender usage limit reached');
+});
+
+it('uses the first string of an array error when message is absent', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send' => Http::response([
+            'status' => 400,
+            'error' => ['content must be shorter than or equal to 918 characters'],
+        ], 400),
+    ]);
+
+    expect(fn () => app(LaravelNotifyAfrica::class)->sendSms(NotifyAfricaMessage::make()->to('255712345678')->content('Hi')))
+        ->toThrow(NotifyAfricaValidationException::class, 'content must be shorter than or equal to 918 characters');
+});
+
+it('sends personalised bulk SMS via send-bulk with per-recipient ids', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send-bulk' => Http::response([
+            'status' => 202,
+            'message' => 'Bulk messages accepted',
+            'timestamp' => '2026-09-09T13:10:00.000Z',
+            'path' => '/api/v1/api/messages/send-bulk',
+            'data' => [
+                'acceptedCount' => 2,
+                'rejectedCount' => 0,
+                'results' => [
+                    ['messageId' => 'd9b54c80-8a63-4f8b-83c8-71f2439f5429', 'status' => 'scheduled', 'estimatedSegments' => 1, 'debitApplied' => true],
+                    ['messageId' => 'fe245daf-b447-4de7-9af4-35a2ab6cdd71', 'status' => 'scheduled', 'estimatedSegments' => 2, 'debitApplied' => true],
+                ],
+                'creditsDeducted' => 3,
+                'remainingBalance' => 497,
+            ],
+        ], 202),
+    ]);
+
+    $response = app(LaravelNotifyAfrica::class)->sendPersonalizedSms(
+        [
+            ['to' => '255712345678', 'message' => 'Hello Asha'],
+            ['recipient' => '+255 713 456 789', 'content' => 'Hello Baraka'],
+        ],
+        scheduledAt: new DateTimeImmutable('2026-09-10 11:00:00', new DateTimeZone('Africa/Dar_es_Salaam')),
+    );
+
+    expect($response->acceptedCount)->toBe(2)
+        ->and($response->rejectedCount)->toBe(0)
+        ->and($response->creditsDeducted)->toBe(3)
+        ->and($response->remainingBalance)->toBe(497)
+        ->and($response->apiStatus)->toBe(202)
+        ->and($response->results)->toHaveCount(2)
+        ->and($response->results[0]->status)->toBe('scheduled')
+        ->and($response->results[1]->estimatedSegments)->toBe(2)
+        ->and($response->results[1]->debitApplied)->toBeTrue()
+        ->and($response->results[0]->accepted())->toBeTrue()
+        ->and($response->messageIds())->toBe(['d9b54c80-8a63-4f8b-83c8-71f2439f5429', 'fe245daf-b447-4de7-9af4-35a2ab6cdd71']);
+
+    Http::assertSent(function ($request) {
+        $data = $request->data();
+
+        return $request->url() === 'https://api.notify.africa/api/v1/api/messages/send-bulk'
+            && $data['senderId'] === '137'
+            && $data['messages'] === [
+                ['recipient' => '+255712345678', 'content' => 'Hello Asha'],
+                ['recipient' => '+255713456789', 'content' => 'Hello Baraka'],
+            ]
+            && $data['scheduledAt'] === '2026-09-10T08:00:00.000Z';
+    });
+});
+
+it('sends personalised bulk without scheduledAt when not given and honours a sender override', function () {
+    Http::fake([
+        'https://api.notify.africa/api/v1/api/messages/send-bulk' => Http::response([
+            'status' => 202,
+            'data' => ['acceptedCount' => 1, 'rejectedCount' => 0, 'results' => [['messageId' => 'x', 'status' => 'processing']]],
+        ], 202),
+    ]);
+
+    app(LaravelNotifyAfrica::class)->sendPersonalizedSms([['to' => '255712345678', 'message' => 'Hi']], 'GENESIS');
+
+    Http::assertSent(fn ($request) => $request->data()['senderId'] === 'GENESIS'
+        && ! array_key_exists('scheduledAt', $request->data()));
+});
+
+it('validates personalised bulk input before calling the API', function (array $messages) {
+    Http::fake();
+
+    expect(fn () => app(LaravelNotifyAfrica::class)->sendPersonalizedSms($messages))
+        ->toThrow(InvalidArgumentException::class);
+
+    Http::assertNothingSent();
+})->with([
+    'empty' => [[]],
+    'no recipient' => [[['message' => 'Hi']]],
+    'empty content' => [[['to' => '255712345678', 'message' => '  ']]],
+]);
